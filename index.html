@@ -618,7 +618,12 @@ function openSettings() {
         <div class="muted" style="font-size:13px">Only if you set ACCESS_CODE on Vercel</div>
         <input id="st-code" class="muted" style="font-size:16px;font-weight:500;margin-top:6px" placeholder="none" value="${esc(S.code || '')}"></div></div>
       <button class="card field" id="st-reset" style="text-align:left"><div class="ic">🗑️</div><div><b style="color:var(--protein)">Reset all data</b></div></button>
-    </div>`, () => save());
+    </div>
+    <p class="muted" style="font-size:12px;line-height:1.5;margin:16px 2px 0">
+      Calories and macros are AI estimates and are often wrong. SnapCal is a personal project — not medical,
+      nutritional or dietary advice, and not for managing any health condition or allergies. Talk to a doctor or
+      dietitian before changing how you eat. Barcode data from Open Food Facts (ODbL). Built with Claude Code.
+      Not affiliated with Cal AI, Hevy, Apple or Google.</p>`, () => save());
   sh.querySelector('#st-goals').onclick = () => showPlan(S.goals, false);
   sh.querySelector('#st-profile').onclick = () => { closeSheet(); renderOnboarding(true); };
   sh.querySelector('#st-health').onclick = openHealth;
