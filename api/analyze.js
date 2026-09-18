@@ -1,8 +1,10 @@
 // Vercel serverless function: photo/text -> nutrition estimate via Gemini.
 // Env: GEMINI_API_KEY (required), GEMINI_MODEL (optional), ACCESS_CODE (optional gate).
 
-// Order is from measured reliability (Sep 2026 logs): 3.6 answers in ~6s; 3.8/3.7 were often overloaded.
-const MODELS = [...new Set([process.env.GEMINI_MODEL, 'gemini-3.6-flash', 'gemini-3.7-flash', 'gemini-3.8-flash'].filter(Boolean))];
+// Free-tier friendly order: Flash-Lite models have their own, larger free quotas and are rarely
+// overloaded; full Flash models are the fallback. Each model's free quota is separate.
+const MODELS = [...new Set([process.env.GEMINI_MODEL,
+  'gemini-3.5-flash-lite', 'gemini-3.1-flash-lite', 'gemini-3.6-flash', 'gemini-3.5-flash'].filter(Boolean))];
 
 const SCHEMA = {
   type: 'OBJECT',
@@ -66,8 +68,9 @@ export default async function handler(req, res) {
   // Up to 3 passes over the model list, backing off when everything is overloaded.
   const attempts = [0, 1500, 4000].flatMap(wait => MODELS.map((model, i) => ({ model, wait: i ? 0 : wait })));
   const deadline = Date.now() + 40000; // answer or fail within 40s, never hang
+  let quotaHits = 0;
   for (const { model, wait } of attempts) {
-    if (Date.now() + wait > deadline - 3000) break;
+    if (Date.now() + wait > deadline - 3000 || quotaHits >= MODELS.length) break;
     if (wait) await new Promise(r => setTimeout(r, wait));
     const t0 = Date.now();
     let r, data;
@@ -86,9 +89,7 @@ export default async function handler(req, res) {
     }
     console.log(JSON.stringify({ model, status: r.status, ms: Date.now() - t0, err: data?.error?.message?.slice(0, 80) }));
     // Quota is shared by every model on the key, so retrying just wastes time.
-    if (r.status === 429) {
-      return res.status(429).json({ error: 'Gemini limit reached. Wait a minute and try again; if it keeps happening, the free daily limit is used up.' });
-    }
+    if (r.status === 429) { quotaHits++; lastErr = 'quota'; continue; }
     // Missing or overloaded model: try the next one.
     if ([404, 500, 503].includes(r.status)) { lastErr = data?.error?.message || `Model ${model} unavailable`; continue; }
     if (!r.ok) return res.status(502).json({ error: data?.error?.message || `Gemini error ${r.status}` });
@@ -111,6 +112,9 @@ export default async function handler(req, res) {
     } catch {
       return res.status(502).json({ error: 'Could not read the AI response, try again' });
     }
+  }
+  if (quotaHits >= MODELS.length) {
+    return res.status(429).json({ error: 'Free Gemini limit used up for now. Try again in a minute, or tomorrow if it keeps happening.' });
   }
   return res.status(503).json({ error: `Gemini is busy right now, try again in a moment (${lastErr.slice(0, 60)})` });
 }
