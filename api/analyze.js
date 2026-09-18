@@ -66,11 +66,13 @@ export default async function handler(req, res) {
 
   let lastErr = 'Unknown error';
   // Up to 3 passes over the model list, backing off when everything is overloaded.
-  const attempts = [0, 1500, 4000].flatMap(wait => MODELS.map((model, i) => ({ model, wait: i ? 0 : wait })));
+  // Optional: pin one of the allowed models (used for accuracy benchmarks).
+  const models = MODELS.includes(req.body?.model) ? [req.body.model] : MODELS;
+  const attempts = [0, 1500, 4000].flatMap(wait => models.map((model, i) => ({ model, wait: i ? 0 : wait })));
   const deadline = Date.now() + 40000; // answer or fail within 40s, never hang
   let quotaHits = 0;
   for (const { model, wait } of attempts) {
-    if (Date.now() + wait > deadline - 3000 || quotaHits >= MODELS.length) break;
+    if (Date.now() + wait > deadline - 3000 || quotaHits >= models.length) break;
     if (wait) await new Promise(r => setTimeout(r, wait));
     const t0 = Date.now();
     let r, data;
@@ -88,7 +90,7 @@ export default async function handler(req, res) {
       continue;
     }
     console.log(JSON.stringify({ model, status: r.status, ms: Date.now() - t0, err: data?.error?.message?.slice(0, 80) }));
-    // Quota is shared by every model on the key, so retrying just wastes time.
+    // This model's free quota is used up: move on (each model has its own quota).
     if (r.status === 429) { quotaHits++; lastErr = 'quota'; continue; }
     // Missing or overloaded model: try the next one.
     if ([404, 500, 503].includes(r.status)) { lastErr = data?.error?.message || `Model ${model} unavailable`; continue; }
@@ -113,7 +115,7 @@ export default async function handler(req, res) {
       return res.status(502).json({ error: 'Could not read the AI response, try again' });
     }
   }
-  if (quotaHits >= MODELS.length) {
+  if (quotaHits >= models.length) {
     return res.status(429).json({ error: 'Free Gemini limit used up for now. Try again in a minute, or tomorrow if it keeps happening.' });
   }
   return res.status(503).json({ error: `Gemini is busy right now, try again in a moment (${lastErr.slice(0, 60)})` });
