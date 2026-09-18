@@ -1,7 +1,8 @@
 // Vercel serverless function: photo/text -> nutrition estimate via Gemini.
 // Env: GEMINI_API_KEY (required), GEMINI_MODEL (optional), ACCESS_CODE (optional gate).
 
-const MODELS = [...new Set([process.env.GEMINI_MODEL, 'gemini-3.8-flash', 'gemini-3.7-flash', 'gemini-3.6-flash'].filter(Boolean))];
+// Order is from measured reliability (Sep 2026 logs): 3.6 answers in ~6s; 3.8/3.7 were often overloaded.
+const MODELS = [...new Set([process.env.GEMINI_MODEL, 'gemini-3.6-flash', 'gemini-3.7-flash', 'gemini-3.8-flash'].filter(Boolean))];
 
 const SCHEMA = {
   type: 'OBJECT',
@@ -64,16 +65,32 @@ export default async function handler(req, res) {
   let lastErr = 'Unknown error';
   // Up to 3 passes over the model list, backing off when everything is overloaded.
   const attempts = [0, 1500, 4000].flatMap(wait => MODELS.map((model, i) => ({ model, wait: i ? 0 : wait })));
+  const deadline = Date.now() + 40000; // answer or fail within 40s, never hang
   for (const { model, wait } of attempts) {
+    if (Date.now() + wait > deadline - 3000) break;
     if (wait) await new Promise(r => setTimeout(r, wait));
-    const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-goog-api-key': key },
-      body,
-    });
-    const data = await r.json().catch(() => ({}));
+    const t0 = Date.now();
+    let r, data;
+    try {
+      r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-goog-api-key': key },
+        body,
+        signal: AbortSignal.timeout(Math.min(15000, deadline - Date.now())), // a hung model shouldn't eat the whole request
+      });
+      data = await r.json().catch(() => ({}));
+    } catch {
+      console.log(JSON.stringify({ model, status: 'timeout', ms: Date.now() - t0 }));
+      lastErr = `Model ${model} timed out`;
+      continue;
+    }
+    console.log(JSON.stringify({ model, status: r.status, ms: Date.now() - t0, err: data?.error?.message?.slice(0, 80) }));
+    // Quota is shared by every model on the key, so retrying just wastes time.
+    if (r.status === 429) {
+      return res.status(429).json({ error: 'Gemini limit reached. Wait a minute and try again; if it keeps happening, the free daily limit is used up.' });
+    }
     // Missing or overloaded model: try the next one.
-    if ([404, 429, 500, 503].includes(r.status)) { lastErr = data?.error?.message || `Model ${model} unavailable`; continue; }
+    if ([404, 500, 503].includes(r.status)) { lastErr = data?.error?.message || `Model ${model} unavailable`; continue; }
     if (!r.ok) return res.status(502).json({ error: data?.error?.message || `Gemini error ${r.status}` });
 
     const out = (data.candidates?.[0]?.content?.parts || []).filter(p => !p.thought).map(p => p.text || '').join('');
@@ -95,5 +112,5 @@ export default async function handler(req, res) {
       return res.status(502).json({ error: 'Could not read the AI response, try again' });
     }
   }
-  return res.status(502).json({ error: lastErr });
+  return res.status(503).json({ error: `Gemini is busy right now, try again in a moment (${lastErr.slice(0, 60)})` });
 }
