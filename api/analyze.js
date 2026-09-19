@@ -89,7 +89,9 @@ export default async function handler(req, res) {
       lastErr = `Model ${model} timed out`;
       continue;
     }
-    console.log(JSON.stringify({ model, status: r.status, ms: Date.now() - t0, err: data?.error?.message?.slice(0, 80) }));
+    const u = data?.usageMetadata || {};
+    console.log(JSON.stringify({ model, status: r.status, ms: Date.now() - t0, err: data?.error?.message?.slice(0, 80),
+      tokIn: u.promptTokenCount, tokOut: u.candidatesTokenCount, tokThink: u.thoughtsTokenCount }));
     // This model's free quota is used up: move on (each model has its own quota).
     if (r.status === 429) { quotaHits++; lastErr = 'quota'; continue; }
     // Missing or overloaded model: try the next one.
